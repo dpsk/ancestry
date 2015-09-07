@@ -58,6 +58,12 @@ module Ancestry
                 descendant.update_attribute descendant.class.ancestry_column, new_ancestry || nil
               end
             end
+          # ... dont destroy record if it have any active childrens with check_for_active_childrens orphan strategy
+          elsif self.ancestry_base_class.orphan_strategy == :check_for_active_childrens
+            if children.map(&:active).include?(true)
+              self.errors.add(:base, "Can not delete record with active children(s)")
+              return false
+            end
           # ... throw an exception if it has children and orphan strategy is restrict
           elsif self.ancestry_base_class.orphan_strategy == :restrict
             raise Ancestry::AncestryException.new('Cannot delete record because it has descendants.') unless is_childless?
