@@ -325,7 +325,7 @@ module Ancestry
     end
 
     def unscoped_find id
-      self.ancestry_base_class.unscoped { self.ancestry_base_class.find(id) }
+      self.ancestry_base_class.unscoped { self.ancestry_base_class.find(self.id) }
     end
   end
 end
