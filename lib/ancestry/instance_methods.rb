@@ -324,8 +324,8 @@ module Ancestry
       ancestry_value.nil? || (ancestry_value.to_s =~ Ancestry::ANCESTRY_PATTERN && !ancestor_ids.include?(self.id))
     end
 
-    def unscoped_find id
-      self.ancestry_base_class.unscoped { self.ancestry_base_class.find(self.id) }
+    def unscoped_find id_to_find
+      self.ancestry_base_class.unscoped { self.ancestry_base_class.find(id_to_find) }
     end
   end
 end
