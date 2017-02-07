@@ -325,6 +325,7 @@ module Ancestry
     end
 
     def unscoped_find id_to_find
+      id_to_find = id_to_find.id if id_to_find.respond_to?(:id)
       self.ancestry_base_class.unscoped { self.ancestry_base_class.find(id_to_find) }
     end
   end
