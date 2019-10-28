@@ -16,6 +16,20 @@ ActiveSupport.test_order = :random if ActiveSupport.respond_to?(:test_order=)
 require 'active_record'
 require 'logger'
 
+# Rails 3.2 has issues with mysql 5.7, primary key not being null.
+# See https://stackoverflow.com/questions/33742967
+if ActiveRecord::VERSION::MAJOR < 4
+  begin
+    require 'active_record/connection_adapters/mysql_adapter'
+    ActiveRecord::ConnectionAdapters::MysqlAdapter
+    class ActiveRecord::ConnectionAdapters::MysqlAdapter
+      NATIVE_DATABASE_TYPES[:primary_key] = "int(11) auto_increment PRIMARY KEY"
+    end
+  rescue LoadError
+    # not running with mysql, don't monkey patch
+  end
+end
+
 # Make absolutely sure we are testing local ancestry
 require File.expand_path('../../lib/ancestry', __FILE__)
 
@@ -34,12 +48,7 @@ class AncestryTestDatabase
     end
 
     # Setup database connection
-    db_type =
-      if ENV["BUNDLE_GEMFILE"] && ENV["BUNDLE_GEMFILE"] != File.expand_path("../../Gemfile", __FILE__)
-        File.basename(ENV["BUNDLE_GEMFILE"]).split("_").first
-      else
-        "sqlite3"
-      end
+    db_type = ENV["DB"].presence || "sqlite3"
     config = YAML.load_file(filename)[db_type]
     ActiveRecord::Base.establish_connection config
     begin
@@ -64,6 +73,11 @@ class AncestryTestDatabase
     ActiveRecord::Base.connection.create_table 'test_nodes' do |table|
       table.string options[:ancestry_column] || :ancestry
       table.integer options[:depth_cache_column] || :ancestry_depth if options[:cache_depth]
+      if options[:counter_cache]
+        counter_cache_column = options[:counter_cache] == true ? :children_count : options[:counter_cache]
+        table.integer counter_cache_column
+      end
+
       extra_columns.each do |name, type|
         table.send type, name
       end unless extra_columns.nil?
@@ -79,14 +93,7 @@ class AncestryTestDatabase
       model.table_name = 'test_nodes'
 
       if default_scope_params.present?
-
-        # Rails < 3.1 doesn't support lambda default_scopes (only hashes)
-        # But Rails >= 4 logs deprecation warnings for hash default_scopes
-        if ActiveRecord::VERSION::STRING < "3.1"
-          model.send :default_scope, { :conditions => default_scope_params }
-        else
-          model.send :default_scope, lambda { model.where(default_scope_params) }
-        end
+        model.send :default_scope, lambda { model.where(default_scope_params) }
       end
 
       model.has_ancestry options unless options.delete(:skip_ancestry)

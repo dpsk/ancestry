@@ -2,7 +2,11 @@ module Ancestry
   module ClassMethods
     # Fetch tree node if necessary
     def to_node object
-      if object.is_a?(self.ancestry_base_class) then object else find(object) end
+      if object.is_a?(self.ancestry_base_class)
+        object
+      else
+        unscoped_where { |scope| scope.find(object.try(primary_key) || object) }
+      end
     end
 
     # Scope on relative depth options
@@ -27,38 +31,27 @@ module Ancestry
       end
     end
 
-    # Arrangement
+    # Get all nodes and sorting them into an empty hash
     def arrange options = {}
-      scope =
-        if options[:order].nil?
-          self.ancestry_base_class.ordered_by_ancestry
-        else
-          self.ancestry_base_class.ordered_by_ancestry_and options.delete(:order)
-        end
-      # Get all nodes ordered by ancestry and start sorting them into an empty hash
-      arrange_nodes scope.where(options)
+      if (order = options.delete(:order))
+        arrange_nodes self.ancestry_base_class.order(order).where(options)
+      else
+        arrange_nodes self.ancestry_base_class.where(options)
+      end
     end
 
     # Arrange array of nodes into a nested hash of the form
     # {node => children}, where children = {} if the node has no children
+    # If a node's parent is not included, the node will be included as if it is a top level node
     def arrange_nodes(nodes)
-      arranged = ActiveSupport::OrderedHash.new
-      min_depth = Float::INFINITY
-      index = Hash.new { |h, k| h[k] = ActiveSupport::OrderedHash.new }
+      node_ids = Set.new(nodes.map(&:id))
+      index = Hash.new { |h, k| h[k] = {} }
 
-      nodes.each do |node|
+      nodes.each_with_object({}) do |node, arranged|
         children = index[node.id]
         index[node.parent_id][node] = children
-
-        depth = node.depth
-        if depth < min_depth
-          min_depth = depth
-          arranged.clear
-        end
-        arranged[node] = children if depth == min_depth
+        arranged[node] = children unless node_ids.include?(node.parent_id)
       end
-
-      arranged
     end
 
      # Arrangement to nested array
@@ -105,9 +98,9 @@ module Ancestry
       parents = {}
       exceptions = [] if options[:report] == :list
 
-      self.ancestry_base_class.unscoped do
+      unscoped_where do |scope|
         # For each node ...
-        self.ancestry_base_class.find_each do |node|
+        scope.find_each do |node|
           begin
             # ... check validity of ancestry column
             if !node.valid? and !node.errors[node.class.ancestry_column].blank?
@@ -140,38 +133,38 @@ module Ancestry
 
     # Integrity restoration
     def restore_ancestry_integrity!
-      parents = {}
+      parent_ids = {}
       # Wrap the whole thing in a transaction ...
       self.ancestry_base_class.transaction do
-        self.ancestry_base_class.unscoped do
+        unscoped_where do |scope|
           # For each node ...
-          self.ancestry_base_class.find_each do |node|
+          scope.find_each do |node|
             # ... set its ancestry to nil if invalid
             if !node.valid? and !node.errors[node.class.ancestry_column].blank?
               node.without_ancestry_callbacks do
-                node.update_attribute node.ancestry_column, nil
+                node.update_attribute :ancestor_ids, []
               end
             end
-            # ... save parent of this node in parents array if it exists
-            parents[node.id] = node.parent_id if exists? node.parent_id
+            # ... save parent id of this node in parent_ids array if it exists
+            parent_ids[node.id] = node.parent_id if exists? node.parent_id
 
             # Reset parent id in array to nil if it introduces a cycle
-            parent = parents[node.id]
-            until parent.nil? || parent == node.id
-              parent = parents[parent]
+            parent_id = parent_ids[node.id]
+            until parent_id.nil? || parent_id == node.id
+              parent_id = parent_ids[parent_id]
             end
-            parents[node.id] = nil if parent == node.id
+            parent_ids[node.id] = nil if parent_id == node.id
           end
 
           # For each node ...
-          self.ancestry_base_class.find_each do |node|
-            # ... rebuild ancestry from parents array
-            ancestry, parent = nil, parents[node.id]
-            until parent.nil?
-              ancestry, parent = if ancestry.nil? then parent else "#{parent}/#{ancestry}" end, parents[parent]
+          scope.find_each do |node|
+            # ... rebuild ancestry from parent_ids array
+            ancestor_ids, parent_id = [], parent_ids[node.id]
+            until parent_id.nil?
+              ancestor_ids, parent_id = [parent_id] + ancestor_ids, parent_ids[parent_id]
             end
             node.without_ancestry_callbacks do
-              node.update_attribute node.ancestry_column, ancestry
+              node.update_attribute :ancestor_ids, ancestor_ids
             end
           end
         end
@@ -179,13 +172,13 @@ module Ancestry
     end
 
     # Build ancestry from parent id's for migration purposes
-    def build_ancestry_from_parent_ids! parent_id = nil, ancestry = nil
-      self.ancestry_base_class.unscoped do
-        self.ancestry_base_class.where(:parent_id => parent_id).find_each do |node|
+    def build_ancestry_from_parent_ids! parent_id = nil, ancestor_ids = []
+      unscoped_where do |scope|
+        scope.where(:parent_id => parent_id).find_each do |node|
           node.without_ancestry_callbacks do
-            node.update_attribute ancestry_column, ancestry
+            node.update_attribute :ancestor_ids, ancestor_ids
           end
-          build_ancestry_from_parent_ids! node.id, if ancestry.nil? then "#{node.id}" else "#{ancestry}/#{node.id}" end
+          build_ancestry_from_parent_ids! node.id, ancestor_ids + [node.id]
         end
       end
     end
@@ -195,10 +188,39 @@ module Ancestry
       raise Ancestry::AncestryException.new("Cannot rebuild depth cache for model without depth caching.") unless respond_to? :depth_cache_column
 
       self.ancestry_base_class.transaction do
-        self.ancestry_base_class.unscoped do
-          self.ancestry_base_class.find_each do |node|
+        unscoped_where do |scope|
+          scope.find_each do |node|
             node.update_attribute depth_cache_column, node.depth
           end
+        end
+      end
+    end
+
+    def unscoped_where
+      if ActiveRecord::VERSION::MAJOR < 4
+        self.ancestry_base_class.unscoped do
+          yield self.ancestry_base_class
+        end
+      else
+        yield self.ancestry_base_class.unscope(:where)
+      end
+    end
+
+    ANCESTRY_UNCAST_TYPES = [:string, :uuid, :text].freeze
+    if ActiveSupport::VERSION::STRING < "4.2"
+      def primary_key_is_an_integer?
+        if defined?(@primary_key_is_an_integer)
+          @primary_key_is_an_integer
+        else
+          @primary_key_is_an_integer = !ANCESTRY_UNCAST_TYPES.include?(columns_hash[primary_key.to_s].type)
+        end
+      end
+    else
+      def primary_key_is_an_integer?
+        if defined?(@primary_key_is_an_integer)
+          @primary_key_is_an_integer
+        else
+          @primary_key_is_an_integer = !ANCESTRY_UNCAST_TYPES.include?(type_for_attribute(primary_key).type)
         end
       end
     end

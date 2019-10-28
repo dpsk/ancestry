@@ -1,60 +1,22 @@
 sudo: false
+language: ruby
+cache: bundler
 
 rvm:
-  - 1.9.3
-  - 2.2.6
-  - 2.3.3
+  - 2.5
+  - 2.6
+
+env:
+  - DB=pg
+  - DB=mysql2
+  - DB=sqlite3
 
 gemfile:
-gemfile:
-  - gemfiles/mysql_ar_32.gemfile
-  - gemfiles/mysql_ar_40.gemfile
-  - gemfiles/mysql_ar_41.gemfile
-  - gemfiles/mysql_ar_42.gemfile
-  - gemfiles/mysql2_ar_50.gemfile
-  - gemfiles/pg_ar_32.gemfile
-  - gemfiles/pg_ar_40.gemfile
-  - gemfiles/pg_ar_41.gemfile
-  - gemfiles/pg_ar_42.gemfile
-  - gemfiles/pg_ar_50.gemfile
-  - gemfiles/sqlite3_ar_32.gemfile
-  - gemfiles/sqlite3_ar_40.gemfile
-  - gemfiles/sqlite3_ar_41.gemfile
-  - gemfiles/sqlite3_ar_42.gemfile
-  - gemfiles/sqlite3_ar_50.gemfile
-
-matrix:
-  exclude:
-    - rvm: 1.9.3
-      gemfile: gemfiles/mysql_ar_41.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/pg_ar_41.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/sqlite3_ar_41.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/mysql_ar_42.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/pg_ar_42.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/sqlite3_ar_42.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/mysql2_ar_50.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/pg_ar_50.gemfile
-    - rvm: 1.9.3
-      gemfile: gemfiles/sqlite3_ar_50.gemfile
-    - rvm: 2.2.6
-      gemfile: gemfiles/mysql_ar_32.gemfile
-    - rvm: 2.2.6
-      gemfile: gemfiles/pg_ar_32.gemfile
-    - rvm: 2.2.6
-      gemfile: gemfiles/sqlite3_ar_32.gemfile
-    - rvm: 2.3.3
-      gemfile: gemfiles/mysql_ar_32.gemfile
-    - rvm: 2.3.3
-      gemfile: gemfiles/pg_ar_32.gemfile
-    - rvm: 2.3.3
-      gemfile: gemfiles/sqlite3_ar_32.gemfile
+  - gemfiles/gemfile_42.gemfile
+  - gemfiles/gemfile_50.gemfile
+  - gemfiles/gemfile_51.gemfile
+  - gemfiles/gemfile_52.gemfile
+  - gemfiles/gemfile_60.gemfile
 
 services:
   - mysql

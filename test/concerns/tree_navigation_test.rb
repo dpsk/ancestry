@@ -11,8 +11,8 @@ class TreeNavigationTest < ActiveSupport::TestCase
         assert_equal [lvl0_node], lvl0_node.path
         assert_equal 0, lvl0_node.depth
         # Parent assertions
-        assert_equal nil, lvl0_node.parent_id
-        assert_equal nil, lvl0_node.parent
+        assert_nil lvl0_node.parent_id
+        assert_nil lvl0_node.parent
         refute lvl0_node.parent_id?
         # Root assertions
         assert_equal lvl0_node.id, lvl0_node.root_id
@@ -34,7 +34,14 @@ class TreeNavigationTest < ActiveSupport::TestCase
         end
         assert_equal descendants.map(&:id), lvl0_node.descendant_ids
         assert_equal descendants, lvl0_node.descendants
-        assert_equal [lvl0_node] + descendants, lvl0_node.subtree
+        # Subtree assertions
+        subtree = [lvl0_node] + descendants
+        assert_equal subtree.map(&:id), lvl0_node.subtree_ids
+        assert_equal subtree, lvl0_node.subtree
+        # Indirects assertions
+        indirects = lvl0_node.descendants - lvl0_node.children
+        assert_equal indirects.map(&:id), lvl0_node.indirect_ids
+        assert_equal indirects, lvl0_node.indirects
 
         lvl0_children.each do |lvl1_node, lvl1_children|
           # Ancestors assertions
@@ -67,7 +74,14 @@ class TreeNavigationTest < ActiveSupport::TestCase
           end
           assert_equal descendants.map(&:id), lvl1_node.descendant_ids
           assert_equal descendants, lvl1_node.descendants
-          assert_equal [lvl1_node] + descendants, lvl1_node.subtree
+          # Subtree assertions
+          subtree = [lvl1_node] + descendants
+          assert_equal subtree.map(&:id), lvl1_node.subtree_ids
+          assert_equal subtree, lvl1_node.subtree
+          # Indirects assertions
+          indirects = lvl1_node.descendants - lvl1_node.children
+          assert_equal indirects.map(&:id), lvl1_node.indirect_ids
+          assert_equal indirects, lvl1_node.indirects
 
           lvl1_children.each do |lvl2_node, lvl2_children|
             # Ancestors assertions
@@ -100,7 +114,14 @@ class TreeNavigationTest < ActiveSupport::TestCase
             end
             assert_equal descendants.map(&:id), lvl2_node.descendant_ids
             assert_equal descendants, lvl2_node.descendants
-            assert_equal [lvl2_node] + descendants, lvl2_node.subtree
+            # Subtree assertions
+            subtree = [lvl2_node] + descendants
+            assert_equal subtree.map(&:id), lvl2_node.subtree_ids
+            assert_equal subtree, lvl2_node.subtree
+            # Indirects assertions
+            indirects = lvl2_node.descendants - lvl2_node.children
+            assert_equal indirects.map(&:id), lvl2_node.indirect_ids
+            assert_equal indirects, lvl2_node.indirects
           end
         end
       end

@@ -1,106 +1,114 @@
-class << ActiveRecord::Base
-  def has_ancestry options = {}
-    # Check options
-    raise Ancestry::AncestryException.new("Options for has_ancestry must be in a hash.") unless options.is_a? Hash
-    options.each do |key, value|
-      unless [:ancestry_column, :orphan_strategy, :cache_depth, :depth_cache_column, :touch].include? key
-        raise Ancestry::AncestryException.new("Unknown option for has_ancestry: #{key.inspect} => #{value.inspect}.")
+module Ancestry
+  module HasAncestry
+    def has_ancestry options = {}
+      # Check options
+      raise Ancestry::AncestryException.new("Options for has_ancestry must be in a hash.") unless options.is_a? Hash
+      options.each do |key, value|
+        unless [:ancestry_column, :orphan_strategy, :cache_depth, :depth_cache_column, :touch, :counter_cache, :primary_key_format].include? key
+          raise Ancestry::AncestryException.new("Unknown option for has_ancestry: #{key.inspect} => #{value.inspect}.")
+        end
       end
-    end
 
-    # Include instance methods
-    include Ancestry::InstanceMethods
+      # Create ancestry column accessor and set to option or default
+      cattr_accessor :ancestry_column
+      self.ancestry_column = options[:ancestry_column] || :ancestry
 
-    # Include dynamic class methods
-    extend Ancestry::ClassMethods
+      # Save self as base class (for STI)
+      cattr_accessor :ancestry_base_class
+      self.ancestry_base_class = self
 
-    # Include class methods that implement materialized path methods
-    extend Ancestry::MaterializedPath
+      # Touch ancestors after updating
+      cattr_accessor :touch_ancestors
+      self.touch_ancestors = options[:touch] || false
 
-    # Create ancestry column accessor and set to option or default
-    cattr_accessor :ancestry_column
-    self.ancestry_column = options[:ancestry_column] || :ancestry
+      # Include instance methods
+      include Ancestry::InstanceMethods
 
-    # Create orphan strategy accessor and set to option or default (writer comes from DynamicClassMethods)
-    cattr_reader :orphan_strategy
-    self.orphan_strategy = options[:orphan_strategy] || :destroy
+      # Include dynamic class methods
+      extend Ancestry::ClassMethods
 
-    # Save self as base class (for STI)
-    cattr_accessor :ancestry_base_class
-    self.ancestry_base_class = self
+      validates_format_of self.ancestry_column, :with => derive_ancestry_pattern(options[:primary_key_format]), :allow_nil => true
+      extend Ancestry::MaterializedPath
 
-    # Touch ancestors after updating
-    cattr_accessor :touch_ancestors
-    self.touch_ancestors = options[:touch] || false
+      # Create orphan strategy accessor and set to option or default (writer comes from DynamicClassMethods)
+      cattr_reader :orphan_strategy
+      self.orphan_strategy = options[:orphan_strategy] || :destroy
 
-    # Validate format of ancestry column value
-    validates_format_of ancestry_column, :with => Ancestry::ANCESTRY_PATTERN, :allow_nil => true
+      # Validate that the ancestor ids don't include own id
+      validate :ancestry_exclude_self
 
-    # Validate that the ancestor ids don't include own id
-    validate :ancestry_exclude_self
+      # Update descendants with new ancestry before save
+      before_save :update_descendants_with_new_ancestry
 
-    # Named scopes
-    scope :roots, lambda { where(ancestry_column => nil) }
-    scope :ancestors_of, lambda { |object| where(ancestor_conditions(object)) }
-    scope :path_of, lambda { |object| where(path_conditions(object)) }
-    scope :children_of, lambda { |object| where(child_conditions(object)) }
-    scope :descendants_of, lambda { |object| where(descendant_conditions(object)) }
-    scope :subtree_of, lambda { |object| where(subtree_conditions(object)) }
-    scope :siblings_of, lambda { |object| where(sibling_conditions(object)) }
-    scope :ordered_by_ancestry, lambda {
-      if %w(mysql mysql2 sqlite postgresql).include?(connection.adapter_name.downcase) && ActiveRecord::VERSION::MAJOR >= 5
-        reorder("coalesce(#{connection.quote_table_name(table_name)}.#{connection.quote_column_name(ancestry_column)}, '')")
+      # Apply orphan strategy before destroy
+      before_destroy :apply_orphan_strategy
+
+      # Create ancestry column accessor and set to option or default
+      if options[:cache_depth]
+        # Create accessor for column name and set to option or default
+        self.cattr_accessor :depth_cache_column
+        self.depth_cache_column = options[:depth_cache_column] || :ancestry_depth
+
+        # Cache depth in depth cache column before save
+        before_validation :cache_depth
+        before_save :cache_depth
+
+        # Validate depth column
+        validates_numericality_of depth_cache_column, :greater_than_or_equal_to => 0, :only_integer => true, :allow_nil => false
+      end
+
+      # Create counter cache column accessor and set to option or default
+      if options[:counter_cache]
+        cattr_accessor :counter_cache_column
+
+        if options[:counter_cache] == true
+          self.counter_cache_column = :children_count
+        else
+          self.counter_cache_column = options[:counter_cache]
+        end
+
+        after_create :increase_parent_counter_cache, if: :has_parent?
+        after_destroy :decrease_parent_counter_cache, if: :has_parent?
+        after_update :update_parent_counter_cache
+      end
+
+      # Create named scopes for depth
+      {:before_depth => '<', :to_depth => '<=', :at_depth => '=', :from_depth => '>=', :after_depth => '>'}.each do |scope_name, operator|
+        scope scope_name, lambda { |depth|
+          raise Ancestry::AncestryException.new("Named scope '#{scope_name}' is only available when depth caching is enabled.") unless options[:cache_depth]
+          where("#{depth_cache_column} #{operator} ?", depth)
+        }
+      end
+
+      after_touch :touch_ancestors_callback
+      after_destroy :touch_ancestors_callback
+
+      if ActiveRecord::VERSION::STRING >= '5.1.0'
+        after_save :touch_ancestors_callback, if: :saved_changes?
       else
-        reorder("(CASE WHEN #{connection.quote_table_name(table_name)}.#{connection.quote_column_name(ancestry_column)} IS NULL THEN 0 ELSE 1 END), #{connection.quote_table_name(table_name)}.#{connection.quote_column_name(ancestry_column)}")
+        after_save :touch_ancestors_callback, if: :changed?
       end
-    }
-    scope :ordered_by_ancestry_and, lambda { |order|
-      if %w(mysql mysql2 sqlite postgresql).include?(connection.adapter_name.downcase) && ActiveRecord::VERSION::MAJOR >= 5
-        reorder("coalesce(#{connection.quote_table_name(table_name)}.#{connection.quote_column_name(ancestry_column)}, ''), #{order}")
+    end
+
+    def acts_as_tree(*args)
+      return super if defined?(super)
+      has_ancestry(*args)
+    end
+
+    private
+
+    def derive_ancestry_pattern(primary_key_format, delimiter = '/')
+      primary_key_format ||= '[0-9]+'
+
+      if primary_key_format.to_s.include?('\A')
+        primary_key_format
       else
-        reorder("(CASE WHEN #{connection.quote_table_name(table_name)}.#{connection.quote_column_name(ancestry_column)} IS NULL THEN 0 ELSE 1 END), #{connection.quote_table_name(table_name)}.#{connection.quote_column_name(ancestry_column)}, #{order}")
+        /\A#{primary_key_format}(#{delimiter}#{primary_key_format})*\Z/
       end
-    }
-    scope :path_of, lambda { |object| to_node(object).path }
-
-    # Update descendants with new ancestry before save
-    before_save :update_descendants_with_new_ancestry
-
-    # Apply orphan strategy before destroy
-    before_destroy :apply_orphan_strategy
-
-    # Create ancestry column accessor and set to option or default
-    if options[:cache_depth]
-      # Create accessor for column name and set to option or default
-      self.cattr_accessor :depth_cache_column
-      self.depth_cache_column = options[:depth_cache_column] || :ancestry_depth
-
-      # Cache depth in depth cache column before save
-      before_validation :cache_depth
-      before_save :cache_depth
-
-      # Validate depth column
-      validates_numericality_of depth_cache_column, :greater_than_or_equal_to => 0, :only_integer => true, :allow_nil => false
     end
-
-    # Create named scopes for depth
-    {:before_depth => '<', :to_depth => '<=', :at_depth => '=', :from_depth => '>=', :after_depth => '>'}.each do |scope_name, operator|
-      scope scope_name, lambda { |depth|
-        raise Ancestry::AncestryException.new("Named scope '#{scope_name}' is only available when depth caching is enabled.") unless options[:cache_depth]
-        where("#{depth_cache_column} #{operator} ?", depth)
-      }
-    end
-
-    after_touch :touch_ancestors_callback
-    after_destroy :touch_ancestors_callback
-    after_save :touch_ancestors_callback, if: :changed?
   end
 end
 
 ActiveSupport.on_load :active_record do
-  if not(ActiveRecord::Base.respond_to?(:acts_as_tree))
-    class << ActiveRecord::Base
-      alias_method :acts_as_tree, :has_ancestry
-    end
-  end
+  send :extend, Ancestry::HasAncestry
 end
